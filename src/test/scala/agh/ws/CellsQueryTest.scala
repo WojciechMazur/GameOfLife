@@ -22,9 +22,9 @@ class CellsQueryTest extends FlatSpec{
     val position = Position(0.5f,0.25f)
     val position2 = Position(0.1f,0.2f)
     val position3 = Position(11.0f,5.0f)
-    val cell: ActorRef = system.actorOf(Cell.props(position))
-    val cell2: ActorRef = system.actorOf(Cell.props(position2))
-    val cell3: ActorRef = system.actorOf(Cell.props(position3))
+    val cell: ActorRef = system.actorOf(Cell.props(position,11))
+    val cell2: ActorRef = system.actorOf(Cell.props(position2,12))
+    val cell3: ActorRef = system.actorOf(Cell.props(position3,13))
     val refs = Set(cell, cell2, cell3)
 
     val probeStatus = TestProbe()

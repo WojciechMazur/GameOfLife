@@ -1,7 +1,7 @@
 package agh.ws.util
 
 class LongCounter {
-  private var counter: Long = 0
+  protected var counter: Long = 0
   def get: Long = synchronized(counter)
   def inc: Long = synchronized{
     counter+=1

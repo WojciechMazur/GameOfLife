@@ -6,6 +6,7 @@ import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props, Terminated
 import akka.stream.ActorMaterializer
 
 import scala.concurrent.duration._
+import scala.reflect.runtime.universe.{typeTag, TypeTag}
 
 object Cell{
   val alive = true
@@ -28,10 +29,10 @@ object Cell{
   final case class Iterate() extends Request
   final case class IterationCompleted(status:Boolean, requestId:Long) extends Response
 
-  def props(position: Position): Props = Props(new Cell(position))
+  def props(position: Position, id: Long): Props = Props(new Cell(position, id))
 }
 
-class Cell(position: Position) extends Actor with ActorLogging {
+class Cell(position: Position, id: Long) extends Actor with ActorLogging {
 
   import Cell._
 
@@ -68,7 +69,7 @@ class Cell(position: Position) extends Actor with ActorLogging {
     case req@GetNeighbours() =>
       sender() ! Neighbours(neighbours, req.requestId)
 
-    case req@RemoveNeighbours(neighboursToRemove: Set[ActorRef]) =>
+    case RemoveNeighbours(neighboursToRemove: Set[ActorRef]) =>
       val ns = if (neighboursToRemove.isEmpty) neighbours else neighboursToRemove
       ns foreach (n => {
         context unwatch n
@@ -99,13 +100,16 @@ class Cell(position: Position) extends Actor with ActorLogging {
         sender() ! IterationCompleted(iterate(Map.empty, status), req.requestId)
       }
 
-    case QueryResponse(requestId: Long, responses: Map[ActorRef, Status]) =>
+    case QueryResponse(requestId, responses: Map[ActorRef, Status]) =>
       log.debug(s"Received query response with id $requestId")
       val newStatus = iterate(responses, status)
       val sender = queries(requestId)
       context become waitingForMessagess(neighbours, newStatus, queries - requestId)
 
       sender ! IterationCompleted(newStatus, requestId)
+
+    case QueryResponse(_, unknownResponses) =>
+      log.warning(s"Unknown response $unknownResponses")
 
     case msg @ _ => log.warning(s"Unknown message $msg from ${sender()}")
   }

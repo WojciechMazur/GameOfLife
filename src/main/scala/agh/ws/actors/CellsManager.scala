@@ -8,15 +8,15 @@ import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
 import akka.stream.ActorMaterializer
 
 import scala.concurrent.duration._
-import scala.collection.mutable
+import scala.collection.{GenTraversableOnce, mutable}
 
 object CellsManager{
   final case class RegisterCell(position: Position) extends Request
-  final case class CellRegistered(requestId: Long, actorRef: ActorRef, position: Position) extends Response
+  final case class CellRegistered(requestId: Long, actorRef: ActorRef, position: Position, cellId: Long) extends Response
 
   def props(boundries: Boundries, boundiresBehavior: BoundiresBehavior, cellsOffset:Float): Props = Props(new CellsManager(boundries, boundiresBehavior, cellsOffset))
 
-  val matchPrecision = 0.01
+  val matchPrecision = GameOfLifeApp.size/4
 }
 
 class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, cellsOffset:Float) extends Actor with ActorLogging {
@@ -24,6 +24,7 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
   import CellsManager._
 
   private val cellsOrderedByPosition: mutable.Map[Position, ActorRef] = scala.collection.mutable.SortedMap[Position, ActorRef]()(Ordering.by(p => (p.y, p.x)))
+  private val cellsOrderedById: mutable.Map[Long, ActorRef] = scala.collection.mutable.SortedMap[Long, ActorRef]()
   implicit val system: ActorSystem = context.system
   implicit val materializer: ActorMaterializer = ActorMaterializer()
 
@@ -35,10 +36,12 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
   def waitingForMessagess(implicit pending: Map[Long, ActorRef]): Receive = {
     case req @ RegisterCell(position) =>
       log.debug(s"Cell reqister request #${req.requestId} - $position")
-      val newCell = context.actorOf(Cell.props(position), s"cell-${position.x}-${position.y}-${CellsCounter.inc}")
+      val cellId = CellsCounter.inc
+      val newCell = context.actorOf(Cell.props(position, cellId), s"cell-${position.x}-${position.y}-$cellId")
       context.watch(newCell)
       cellsOrderedByPosition += (position -> newCell)
-      sender() ! CellRegistered(req.requestId, newCell, position)
+      cellsOrderedById += (cellId -> newCell)
+      sender() ! CellRegistered(req.requestId, newCell, position, cellId)
       registerInNeighbourhood(position, newCell)
 
     case response @ NeighbourRegistered(_) =>
@@ -52,7 +55,7 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
         req.requestId,
         requester,
         Iterate(),
-        10.seconds
+        5.seconds
       ))
       pendingRequest(pending, requester, req)
 
@@ -85,7 +88,8 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
   }
 
   private def registerInNeighbourhood(position: Position, newCell: ActorRef)(implicit pendingRequests: Map[Long, ActorRef]): Unit = {
-    val requests = findCellNeighbours(position)
+    val neighbours = findCellNeighbours(position)
+    val requests = neighbours
       .map(ref => {
         val request = RegisterNeighbour(newCell)
         ref ! request
@@ -94,10 +98,20 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
     pendingRequest(pendingRequests, self, requests)
   }
 
+
   private def findCellNeighbours(position: Position): Seq[ActorRef] = {
-    Direction.directions
+   Direction.directions
       .flatMap(direction => boundiresBehavior.neighbourPosition(position, direction, boundires, cellsOffset))
-      .flatMap(findCell(cellsOrderedByPosition.toStream, _))
+      .flatMap(getIdByPosition)
+      .flatMap(cellsOrderedById.get)
+    //.flatMap(findCell(cellsOrderedByPosition.toStream, _))
+  }
+
+  private def getIdByPosition(position: Position): Option[Long] = {
+    val row:Long = (position.y/(GameOfLifeApp.size+GameOfLifeApp.spacing)).toLong
+    val column:Long = (position.x/(GameOfLifeApp.size+GameOfLifeApp.spacing)).toLong
+    val index=row*GameOfLifeApp.cellsX+column+1
+    Some(index)
   }
 
   @scala.annotation.tailrec

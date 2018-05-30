@@ -1,15 +1,7 @@
+import agh.ws.actors.Cell.Position
 import agh.ws.util.RequestsCounter
 
-trait Request {
-  val requestId:Long = RequestsCounter.inc
-}
+val target = Position(0,748.5f)
+val pos    = Position(0, 748)
 
-case class Test(name:String) extends Request
-
-val root = Test("a")
-root.requestId
-
-val copy = root.copy(name="b")
-copy.requestId
-
-
+Math.pow(target.y-pos.y,2)

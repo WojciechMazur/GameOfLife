@@ -1,21 +1,18 @@
 package agh.ws
 
 import agh.ws.actors.Cell
-import agh.ws.actors.Cell.{GetNeighbours, NeighbourRegistered, Neighbours, RegisterNeighbour}
 import akka.actor.{ActorRef, ActorSystem}
-import akka.dispatch.Futures
 import akka.testkit.TestProbe
 import org.scalatest.FlatSpec
-import org.scalatest._
 
 class CellTest extends FlatSpec{
   import Cell._
   implicit val system: ActorSystem = ActorSystem("game-of-life")
 
   "Cell" should "register neighbours" in {
-    val cell: ActorRef = system.actorOf(Cell.props(Position(0.5f,0.25f)))
-    val cell2: ActorRef = system.actorOf(Cell.props(Position(0.1f, 0.2f)))
-    val cell3: ActorRef = system.actorOf(Cell.props(Position(11.0f, 5.0f)))
+    val cell: ActorRef = system.actorOf(Cell.props(Position(0.5f,0.25f), 1))
+    val cell2: ActorRef = system.actorOf(Cell.props(Position(0.1f, 0.2f), 2))
+    val cell3: ActorRef = system.actorOf(Cell.props(Position(11.0f, 5.0f), 3))
 
     val probeRegister1 = TestProbe()(system)
     val probeRegister2 = TestProbe()(system)
@@ -43,11 +40,11 @@ class CellTest extends FlatSpec{
   }
 
   it must "overpopulated death" in {
-    val cell: ActorRef = system.actorOf(Cell.props(null))
-    val cell1: ActorRef = system.actorOf(Cell.props(null))
-    val cell2: ActorRef = system.actorOf(Cell.props(null))
-    val cell3: ActorRef = system.actorOf(Cell.props(null))
-    val cell4: ActorRef = system.actorOf(Cell.props(null))
+    val cell: ActorRef = system.actorOf(Cell.props(null,1))
+    val cell1: ActorRef = system.actorOf(Cell.props(null,2))
+    val cell2: ActorRef = system.actorOf(Cell.props(null,3))
+    val cell3: ActorRef = system.actorOf(Cell.props(null,4))
+    val cell4: ActorRef = system.actorOf(Cell.props(null,5))
 
 
     val registerProbe = TestProbe()
@@ -63,7 +60,7 @@ class CellTest extends FlatSpec{
   }
 
   it must "loneliness death" in {
-    val cell: ActorRef = system.actorOf(Cell.props(null))
+    val cell: ActorRef = system.actorOf(Cell.props(null,6))
 
     val probe = TestProbe()
     cell.tell(Iterate(), probe.ref)
@@ -72,10 +69,10 @@ class CellTest extends FlatSpec{
   }
 
   it must "get alive" in {
-    val cell: ActorRef = system.actorOf(Cell.props(null ))
-    val cell1: ActorRef = system.actorOf(Cell.props(null))
-    val cell2: ActorRef = system.actorOf(Cell.props(null))
-    val cell3: ActorRef = system.actorOf(Cell.props(null))
+    val cell: ActorRef = system.actorOf(Cell.props(null, 7))
+    val cell1: ActorRef = system.actorOf(Cell.props(null,8))
+    val cell2: ActorRef = system.actorOf(Cell.props(null,9))
+    val cell3: ActorRef = system.actorOf(Cell.props(null,10))
     cell1 ! ChangeStatus(alive)
     cell2 ! ChangeStatus(alive)
 
