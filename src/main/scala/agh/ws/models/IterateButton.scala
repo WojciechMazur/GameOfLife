@@ -2,7 +2,7 @@ package agh.ws.models
 
 import agh.ws.GameOfLifeApp
 import agh.ws.GameOfLifeApp.{cellsX, cellsY, initCounter}
-import agh.ws.actors.Cell.{Iterate, IterationCompleted, Position}
+import agh.ws.actors.Cell.{ChangeStatus, Iterate, IterationCompleted, Position}
 import agh.ws.actors.CellsQuery.CellTimedOut
 import agh.ws.messagess.QueryResponse
 import akka.actor.ActorRef
@@ -43,6 +43,7 @@ class IterateButton(
       case Success(QueryResponse(_, responses)) =>
         responses.foreach {
           case (ref, result: IterationCompleted) =>
+            ref ! ChangeStatus(result.status, shouldReply = false)
             val id = refsOfCells(ref)
             val rec = cellsRectangles(id)
             rec.isAlive.value = result.status

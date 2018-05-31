@@ -2,7 +2,7 @@ package agh.ws.util
 
 import scalafx.beans.property.LongProperty
 
-class ObersvableLongCounter {
+class ObsersvableLongCounter {
   private val counter: LongProperty = LongProperty(0)
 
   def get: LongProperty = synchronized{
@@ -13,8 +13,6 @@ class ObersvableLongCounter {
     import scalafx.application.Platform
     Platform.runLater(() => {
       counter.value = counter.value + 1
-      if(counter.value % 1000==0)
-        println(counter.value)
     })
     counter
   }

@@ -4,7 +4,7 @@ import agh.ws.actors.Cell.{ChangeStatus, Position, StatusChanged}
 import agh.ws.actors.CellsManager.{CellRegistered, RegisterCell}
 import agh.ws.actors.{Cell, CellsManager}
 import agh.ws.models.{CellRectangle, IterateButton}
-import agh.ws.util.{BoundiresBehavior, Boundries, LongCounter, ObersvableLongCounter}
+import agh.ws.util.{BoundiresBehavior, Boundries, LongCounter, ObsersvableLongCounter}
 import akka.actor.{ActorRef, ActorSystem}
 import akka.pattern.ask
 import akka.stream.ActorMaterializer
@@ -25,11 +25,12 @@ import scalafx.Includes._
 import scalafx.beans.binding.Bindings
 
 object GameOfLifeApp extends JFXApp {
-  val initCounter = new ObersvableLongCounter()
-  val cellsX: Int = 200
-  val cellsY: Int = 100
-  val size = 6
-  val spacing = 1
+  val initCounter = new ObsersvableLongCounter()
+  val iterationCounter = new ObsersvableLongCounter()
+  val cellsX: Int = 120
+  val cellsY: Int = 120
+  val size = 9
+  val spacing = 0
   val width =  cellsX*(size+spacing).toFloat
   val height = cellsY*(size+spacing).toFloat
 
@@ -59,8 +60,14 @@ object GameOfLifeApp extends JFXApp {
         () => s"Cells initialized: ${initCounter.get.value}/${cellsX*cellsY} : ${initCounter.get.value.toDouble / (cellsX * cellsY) * 10000 / 100}%",
         initCounter.get
       )
+      val iterationLabel = new Label{
+        text <== Bindings.createStringBinding(
+          () => s"Iteration: ${iterationCounter.get.value}",
+          iterationCounter.get
+        )
+      }
       val initiallyAliveTextField = new TextField()
-      initiallyAliveTextField.text = (cellsX*cellsY*0.01).toInt.toString
+      initiallyAliveTextField.text = (cellsX*cellsY*0.1).toInt.toString
       initiallyAlive <== initiallyAliveTextField.text
       val randomInitialyAliveButton: Button = new Button("Randomize alive"){
         onMouseClicked = {
@@ -69,7 +76,7 @@ object GameOfLifeApp extends JFXApp {
       }
       val iterateButton = new IterateButton(cellsManager, refsOfCells, cellsRectangles)
 
-      borderPane.top = new HBox(iterateButton, initiallyAliveTextField, randomInitialyAliveButton, initProgress)
+      borderPane.top = new HBox(iterateButton, initiallyAliveTextField, randomInitialyAliveButton, initProgress, iterationLabel)
       val cellsPane = new AnchorPane()
       cellsPane.children = createCells
       borderPane.center = cellsPane

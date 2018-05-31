@@ -57,10 +57,11 @@ class CellsQuery(
     //      receivedResponse(actorRef, NotAvailable, pending, ready)
 
     case CollectionTimeout =>
-      val timedOutReplies: Map[ActorRef, Response] = pending.map { ref =>
-        ref -> CellsQuery.CellTimedOut(-1L)
-      }.toMap
-      requester ! QueryResponse(requestId, ready ++ timedOutReplies)
+//      val timedOutReplies: Map[ActorRef, Response] = pending.map { ref =>
+//        ref -> CellsQuery.CellTimedOut(-1L)
+//      }.toMap
+      log.warning(s"Timeout of cell ${sender()}")
+      requester ! QueryResponse(requestId, ready)
       context stop self
 
     case msg @ _ => log.warning(s"QUERY -Unknown message $msg from ${sender()}")

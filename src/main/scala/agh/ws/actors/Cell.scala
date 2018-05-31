@@ -93,7 +93,7 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
     // Behavior
     case req @ Iterate() =>
       if(neighbours.nonEmpty){
-        context.actorOf(CellsQuery.props(neighbours, req.requestId, self, GetStatus(), 1.second))
+        context.actorOf(CellsQuery.props(neighbours, req.requestId, self, GetStatus(), 3.second), s"query-getStatus-${req.requestId}")
         context become waitingForMessagess(neighbours, status, queries + (req.requestId -> sender()))
       }else{
         log.debug("Empty neighbours list, skipping query")
@@ -101,10 +101,10 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
       }
 
     case QueryResponse(requestId, responses: Map[ActorRef, Status]) =>
-      log.debug(s"Received query response with id $requestId")
+//      log.debug(s"Received query response with id $requestId")
       val newStatus = iterate(responses, status)
       val sender = queries(requestId)
-      context become waitingForMessagess(neighbours, newStatus, queries - requestId)
+      context become waitingForMessagess(neighbours, status, queries - requestId)
 
       sender ! IterationCompleted(newStatus, requestId)
 
@@ -118,8 +118,9 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
     val aliveNeighbours = responses.values.count(_.status == alive)
 
     aliveNeighbours match {
-      case n if n > 3 || n == 0 => dead
-      case _ => alive
+      case 3 => alive
+      case n if n > 3 || n < 2 => dead
+      case _ => lastStatus
     }
   }
 }

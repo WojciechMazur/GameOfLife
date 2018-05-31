@@ -1,7 +1,7 @@
 package agh.ws.actors
 
 import agh.ws._
-import agh.ws.actors.Cell.{Iterate, IterationCompleted, NeighbourRegistered, Position, RegisterNeighbour}
+import agh.ws.actors.Cell.{ChangeStatus, Iterate, IterationCompleted, NeighbourRegistered, Position, RegisterNeighbour}
 import agh.ws.messagess._
 import agh.ws.util.{BoundiresBehavior, Boundries, CellsCounter, Direction}
 import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
@@ -9,6 +9,7 @@ import akka.stream.ActorMaterializer
 
 import scala.concurrent.duration._
 import scala.collection.{GenTraversableOnce, mutable}
+import scalafx.application.Platform
 
 object CellsManager{
   final case class RegisterCell(position: Position) extends Request
@@ -49,6 +50,7 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
       receivedResponse(pending, response)
 
     case req @ Iterate() =>
+      GameOfLifeApp.iterationCounter.inc
       val requester = sender()
       context.actorOf(CellsQuery.props(
         cellsOrderedByPosition.values.toSet,
@@ -56,11 +58,16 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
         requester,
         Iterate(),
         5.seconds
-      ))
+      ), s"query-iterate-${req.requestId}")
       pendingRequest(pending, requester, req)
 
-    case res @ QueryResponse(_, _: Map[ActorRef, IterationCompleted]) =>
+    case res @ QueryResponse(_, results: Map[ActorRef, IterationCompleted]) =>
       log.info("Finished iteration")
+      println(results.size)
+      println(results)
+      results.foreach{
+        case (ref, result) => ref ! ChangeStatus(result.status, shouldReply = false)
+      }
       receivedResponse(pending, res)
 
     case msg @ _ => log.warning(s"MANAGER - Unknown message $msg from ${sender()}")
