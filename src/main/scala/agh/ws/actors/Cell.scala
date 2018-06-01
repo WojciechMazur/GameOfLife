@@ -15,15 +15,20 @@ object Cell{
 
   case class Position(x: Float, y: Float)
 
-  final case class ChangeStatus(status: Boolean, override val shouldReply: Boolean=true) extends Request
+  final case class ChangeStatus(status: Boolean,
+                                override val shouldReply: Boolean=true) extends Request
   final case class GetStatus() extends Request
   final case class Status(status:Boolean, requestId:Long)         extends Response
   final case class StatusChanged(status:Boolean, requestId:Long)  extends Response
 
-  final case class RegisterNeighbour(targetRef: ActorRef)         extends Request
-  final case class RemoveNeighbours(neighbours: Set[ActorRef])    extends Request
+  final case class RegisterNeighbour(targetRef: ActorRef,
+                                     recursive: Boolean = true)   extends Request
+  final case class RemoveNeighbours(neighbours: Set[ActorRef],
+                                    override val shouldReply: Boolean=true,
+                                    recursive: Boolean=true)      extends Request
   final case class GetNeighbours()                                extends Request
   final case class NeighbourRegistered(requestId:Long)                    extends Response
+  final case class NeighboursRemoved(requestId:Long, position: Position)  extends Response
   final case class Neighbours(neighbours: Set[ActorRef], requestId: Long) extends Response
 
   final case class Iterate() extends Request
@@ -52,10 +57,11 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
                            queries: Map[Long, ActorRef])
   : Receive = {
     // Neighbouhood
-    case req @ RegisterNeighbour(neighbour) =>
-      if (!(neighbours contains neighbour)){
+    case req@RegisterNeighbour(neighbour, recursive) =>
+      if (!(neighbours contains neighbour)) {
         log.debug(s"New neighbour $neighbour <--> $self")
-        neighbour ! RegisterNeighbour(self)
+        if (recursive)
+          neighbour ! RegisterNeighbour(self)
         context watch req.targetRef
         context become waitingForMessagess(neighbours + neighbour, status, queries)
       }
@@ -69,13 +75,16 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
     case req@GetNeighbours() =>
       sender() ! Neighbours(neighbours, req.requestId)
 
-    case RemoveNeighbours(neighboursToRemove: Set[ActorRef]) =>
+    case req@RemoveNeighbours(neighboursToRemove: Set[ActorRef], shouldReply: Boolean, recursive: Boolean) =>
       val ns = if (neighboursToRemove.isEmpty) neighbours else neighboursToRemove
       ns foreach (n => {
         context unwatch n
-        n ! RemoveNeighbours(Set(self))
+        if (recursive)
+          n ! RemoveNeighbours(Set(self), shouldReply = false)
         log.debug(s"Removing neighbour $n from $self")
       })
+      if (shouldReply)
+        sender() ! NeighboursRemoved(req.requestId, position)
       context become waitingForMessagess(neighbours diff ns, status, queries)
 
     case NeighbourRegistered(_) => log.debug(s"Recursively registered neighbour $self to ${sender()}")
@@ -83,7 +92,7 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
     // Status
     case req@ChangeStatus(newStatus, shouldReply) =>
       log.debug(s"Changing status of $self to $newStatus")
-      if(shouldReply)
+      if (shouldReply)
         sender() ! StatusChanged(newStatus, req.requestId)
       context become waitingForMessagess(neighbours, newStatus, queries)
 
@@ -91,17 +100,17 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
       sender() ! Status(status, req.requestId)
 
     // Behavior
-    case req @ Iterate() =>
-      if(neighbours.nonEmpty){
+    case req@Iterate() =>
+      if (neighbours.nonEmpty) {
         context.actorOf(CellsQuery.props(neighbours, req.requestId, self, GetStatus(), 3.second), s"query-getStatus-${req.requestId}")
         context become waitingForMessagess(neighbours, status, queries + (req.requestId -> sender()))
-      }else{
+      } else {
         log.debug("Empty neighbours list, skipping query")
         sender() ! IterationCompleted(iterate(Map.empty, status), req.requestId)
       }
 
     case QueryResponse(requestId, responses: Map[ActorRef, Status]) =>
-//      log.debug(s"Received query response with id $requestId")
+      //      log.debug(s"Received query response with id $requestId")
       val newStatus = iterate(responses, status)
       val sender = queries(requestId)
       context become waitingForMessagess(neighbours, status, queries - requestId)
@@ -111,7 +120,7 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
     case QueryResponse(_, unknownResponses) =>
       log.warning(s"Unknown response $unknownResponses")
 
-    case msg @ _ => log.warning(s"Unknown message $msg from ${sender()}")
+    case msg@_ => log.warning(s"Unknown message $msg from ${sender()}")
   }
 
   def iterate(responses: Map[ActorRef, Status], lastStatus: Boolean): Boolean = {

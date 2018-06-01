@@ -1,41 +1,50 @@
 package agh.ws.actors
 
 import agh.ws._
-import agh.ws.actors.Cell.{ChangeStatus, Iterate, IterationCompleted, NeighbourRegistered, Position, RegisterNeighbour}
+import agh.ws.actors.Cell.{ChangeStatus, Iterate, IterationCompleted, NeighbourRegistered, NeighboursRemoved, Position, RegisterNeighbour, RemoveNeighbours}
 import agh.ws.messagess._
-import agh.ws.util.{BoundiresBehavior, Boundries, CellsCounter, Direction}
+import agh.ws.util._
 import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
 import akka.stream.ActorMaterializer
 
+import scala.collection.mutable
 import scala.concurrent.duration._
-import scala.collection.{GenTraversableOnce, mutable}
-import scalafx.application.Platform
+import scala.reflect.runtime.universe._
 
 object CellsManager{
   final case class RegisterCell(position: Position) extends Request
   final case class CellRegistered(requestId: Long, actorRef: ActorRef, position: Position, cellId: Long) extends Response
 
-  def props(boundries: Boundries, boundiresBehavior: BoundiresBehavior, cellsOffset:Float): Props = Props(new CellsManager(boundries, boundiresBehavior, cellsOffset))
+  final case class ChangeNeighbourhoodModel(neighbourhoodModel: NeighbourhoodModel) extends Request
+  final case class NeighbourhoodModelChanged(requestId:Long) extends Response
+  def props(boundries: Boundries, boundiresBehavior: BoundiresBehavior, cellsOffset:Float, neighbourhoodModel: NeighbourhoodModel): Props = Props(new CellsManager(cellsOffset, neighbourhoodModel)(boundries, boundiresBehavior))
 
   val matchPrecision = GameOfLifeApp.size/4
 }
 
-class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, cellsOffset:Float) extends Actor with ActorLogging {
+class CellsManager(
+                    cellsOffset:Float,
+                    initialModel: NeighbourhoodModel
+                  )(
+  implicit boundires: Boundries,
+  boundiresBehavior: BoundiresBehavior)
+  extends Actor with ActorLogging {
 
   import CellsManager._
 
   private val cellsOrderedByPosition: mutable.Map[Position, ActorRef] = scala.collection.mutable.SortedMap[Position, ActorRef]()(Ordering.by(p => (p.y, p.x)))
-  private val cellsOrderedById: mutable.Map[Long, ActorRef] = scala.collection.mutable.SortedMap[Long, ActorRef]()
+  implicit private val cellsOrderedById: mutable.Map[Long, ActorRef] = scala.collection.mutable.SortedMap[Long, ActorRef]()
   implicit val system: ActorSystem = context.system
   implicit val materializer: ActorMaterializer = ActorMaterializer()
 
 
   override def receive: Receive = waitingForMessagess(
-    Map.empty
+    Map.empty,
+    initialModel
   )
 
-  def waitingForMessagess(implicit pending: Map[Long, ActorRef]): Receive = {
-    case req @ RegisterCell(position) =>
+  def waitingForMessagess(implicit pending: Map[Long, ActorRef], neighbourhoodModel: NeighbourhoodModel): Receive = {
+    case req@RegisterCell(position) =>
       log.debug(s"Cell reqister request #${req.requestId} - $position")
       val cellId = CellsCounter.inc
       val newCell = context.actorOf(Cell.props(position, cellId), s"cell-${position.x}-${position.y}-$cellId")
@@ -43,89 +52,88 @@ class CellsManager(boundires: Boundries, boundiresBehavior: BoundiresBehavior, c
       cellsOrderedByPosition += (position -> newCell)
       cellsOrderedById += (cellId -> newCell)
       sender() ! CellRegistered(req.requestId, newCell, position, cellId)
-      registerInNeighbourhood(position, newCell)
+      registerInNeighbourhood(position, newCell, neighbourhoodModel)
 
-    case response @ NeighbourRegistered(_) =>
+    case response@NeighbourRegistered(_) =>
       log.debug(s"Registered cell neighbour of ${sender()}")
-      receivedResponse(pending, response)
+      receivedResponse(pending, response, neighbourhoodModel)
 
-    case req @ Iterate() =>
+    case req@Iterate() =>
       GameOfLifeApp.iterationCounter.inc
       val requester = sender()
-      context.actorOf(CellsQuery.props(
+      val query = context.actorOf(CellsQuery.props(
         cellsOrderedByPosition.values.toSet,
         req.requestId,
         requester,
         Iterate(),
         5.seconds
       ), s"query-iterate-${req.requestId}")
-      pendingRequest(pending, requester, req)
+      pendingRequest(pending, requester, req, neighbourhoodModel)
 
-    case res @ QueryResponse(_, results: Map[ActorRef, IterationCompleted]) =>
-      log.info("Finished iteration")
-      println(results.size)
-      println(results)
-      results.foreach{
-        case (ref, result) => ref ! ChangeStatus(result.status, shouldReply = false)
+    case req @ ChangeNeighbourhoodModel(model) =>
+      log.info("Changing neighbourhood")
+      val query = context.actorOf(CellsQuery.props(
+          cellsOrderedById.values.toSet,
+          req.requestId,
+          self,
+          RemoveNeighbours(Set.empty, recursive = false),
+          5.seconds
+        ))
+      context become waitingForMessagess(
+        pending + (req.requestId -> sender()),
+        model
+      )
+
+    case res @ QueryResponse(_, responses) if responses.values.forall(_.isInstanceOf[NeighboursRemoved]) =>
+      log.info(s"Got query response $res")
+      responses.foreach{
+        case (ref: ActorRef, response: NeighboursRemoved) =>
+          log.debug(s"Setting new neighbourhood of $ref")
+          registerInNeighbourhood(response.position, ref, neighbourhoodModel)
+        case unknown => log.warning(s"Unknown response $unknown")
       }
-      receivedResponse(pending, res)
+      pending(res.requestId) ! NeighbourhoodModelChanged(res.requestId)
+      context become waitingForMessagess(pending - res.requestId, neighbourhoodModel)
 
-    case msg @ _ => log.warning(s"MANAGER - Unknown message $msg from ${sender()}")
+    case msg@_ => log.warning(s"MANAGER - Unknown message $msg from ${sender()}")
 
 
   }
 
 
-  def pendingRequest(pending: Map[Long, ActorRef], senderRef: ActorRef, request: Request): Unit = {
-    context become waitingForMessagess(pending + (request.requestId -> senderRef))
+  def pendingRequest(pending: Map[Long, ActorRef], senderRef: ActorRef, request: Request, nModel: NeighbourhoodModel): Unit = {
+    context become waitingForMessagess(pending + (request.requestId -> senderRef), nModel)
   }
 
-  def pendingRequest(pending: Map[Long, ActorRef], senderRef: ActorRef, requests: Iterable[Request]): Unit = {
+  def pendingRequest(pending: Map[Long, ActorRef], senderRef: ActorRef, requests: Iterable[Request], nModel: NeighbourhoodModel): Unit = {
     val newRequests = requests
       .map(req => req.requestId -> senderRef)
       .toMap
-    context become waitingForMessagess(pending ++ newRequests)
+    context become waitingForMessagess(pending ++ newRequests, nModel)
   }
 
-  def receivedResponse(pending: Map[Long, ActorRef], response: Response): Unit = {
+  def receivedResponse(pending: Map[Long, ActorRef], response: Response, nModel:NeighbourhoodModel): Unit = {
     val ref = pending.getOrElse(response.requestId, self)
-    if(ref!=self)
+    if (ref != self)
       ref ! response
-    context become waitingForMessagess(pending - response.requestId)
+    context become waitingForMessagess(pending - response.requestId, nModel)
   }
 
-  private def registerInNeighbourhood(position: Position, newCell: ActorRef)(implicit pendingRequests: Map[Long, ActorRef]): Unit = {
-    val neighbours = findCellNeighbours(position)
+  private def registerInNeighbourhood(position: Position, newCell: ActorRef, nModel: NeighbourhoodModel)(implicit pendingRequests: Map[Long, ActorRef]): Unit = {
+    val neighbours = nModel.findCellNeighbours(position, cellsOffset)
+    val isRecoursive = nModel match {
+      case HexagonalRandom | PentagonalRandom => false
+      case _ => true
+    }
+
     val requests = neighbours
       .map(ref => {
-        val request = RegisterNeighbour(newCell)
+        val request = RegisterNeighbour(newCell, isRecoursive)
         ref ! request
         request
       })
-    pendingRequest(pendingRequests, self, requests)
+    pendingRequest(pendingRequests, self, requests, nModel)
   }
 
-
-  private def findCellNeighbours(position: Position): Seq[ActorRef] = {
-   Direction.directions
-      .flatMap(direction => boundiresBehavior.neighbourPosition(position, direction, boundires, cellsOffset))
-      .flatMap(getIdByPosition)
-      .flatMap(cellsOrderedById.get)
-    //.flatMap(findCell(cellsOrderedByPosition.toStream, _))
-  }
-
-  private def getIdByPosition(position: Position): Option[Long] = {
-    val row:Long = (position.y/(GameOfLifeApp.size+GameOfLifeApp.spacing)).toLong
-    val column:Long = (position.x/(GameOfLifeApp.size+GameOfLifeApp.spacing)).toLong
-    val index=row*GameOfLifeApp.cellsX+column+1
-    Some(index)
-  }
-
-  @scala.annotation.tailrec
-  private def findCell(seq: Stream[(Position, ActorRef)], target: Position): Option[ActorRef] = seq match {
-    case (that, ref) #:: _ if util.Math.square(that.x - target.x) <= matchPrecision && util.Math.square(that.y - target.y) <= matchPrecision => Some(ref)
-    case Stream.Empty => None
-    case _ #:: xs => findCell(xs, target)
-  }
 
 }
