@@ -16,3 +16,4 @@ class LongCounter {
 object RequestsCounter extends LongCounter
 object QueryCounter    extends LongCounter
 object CellsCounter extends LongCounter
+object GrainsCounter extends LongCounter

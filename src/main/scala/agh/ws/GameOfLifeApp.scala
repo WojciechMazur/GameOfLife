@@ -1,8 +1,8 @@
 package agh.ws
 
-import agh.ws.actors.Cell.{ChangeStatus, Position, RemoveNeighbours, StatusChanged}
+import agh.ws.actors.Cell.{ChangeStatus, Position, StatusChanged}
 import agh.ws.actors.CellsManager.{CellRegistered, ChangeNeighbourhoodModel, NeighbourhoodModelChanged, RegisterCell}
-import agh.ws.actors.{Cell, CellsManager, CellsQuery}
+import agh.ws.actors.{Cell, CellsManager}
 import agh.ws.models.{CellRectangle, IterateButton}
 import agh.ws.util._
 import akka.actor.{ActorRef, ActorSystem}
@@ -14,26 +14,26 @@ import scala.collection.{immutable, mutable}
 import scala.concurrent.ExecutionContextExecutor
 import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
+import scalafx.Includes._
 import scalafx.application
 import scalafx.application.{JFXApp, Platform}
+import scalafx.beans.binding.Bindings
 import scalafx.beans.property.StringProperty
+import scalafx.beans.value.ObservableValue
+import scalafx.geometry.Insets
 import scalafx.scene.Scene
 import scalafx.scene.control.{Button, ComboBox, Label, TextField}
 import scalafx.scene.input.MouseEvent
 import scalafx.scene.layout.{AnchorPane, BorderPane, HBox}
-import scalafx.scene.paint.Color._
-import scalafx.Includes._
-import scalafx.beans.binding.Bindings
-import scalafx.beans.value.ObservableValue
-import scalafx.geometry.Insets
+import scalafx.scene.paint.Color
 import scalafx.util.StringConverter
 
 object GameOfLifeApp extends JFXApp {
   val initCounter = new ObsersvableLongCounter()
   val iterationCounter = new ObsersvableLongCounter()
-  val cellsX: Int = 120
-  val cellsY: Int = 120
-  val size = 9
+  val cellsX: Int = 500
+  val cellsY: Int = 250
+  val size = 3
   val spacing = 0
   val width =  cellsX*(size+spacing).toFloat
   val height = cellsY*(size+spacing).toFloat
@@ -46,6 +46,7 @@ object GameOfLifeApp extends JFXApp {
   val cellsRectangles: mutable.HashMap[Long, CellRectangle] = mutable.HashMap[Long, CellRectangle]()
   val cellsRefs: mutable.HashMap[Long, ActorRef] = mutable.HashMap[Long, ActorRef]()
   val refsOfCells: mutable.HashMap[ActorRef, Long] = mutable.HashMap[ActorRef, Long]()
+  val grainColors: mutable.HashMap[Long, Color] = mutable.HashMap(CellRectangle.noGrainGroup -> Color.LightGrey)
 
   implicit val system: ActorSystem = ActorSystem("Game-of-life")
   implicit val materializer: ActorMaterializer = ActorMaterializer()
@@ -92,7 +93,9 @@ object GameOfLifeApp extends JFXApp {
       initiallyAlive <== initiallyAliveTextField.text
       val randomInitialyAliveButton: Button = new Button("Randomize alive"){
         onMouseClicked = {
-          (_:MouseEvent) => randomAliveCells
+          (_:MouseEvent) =>
+            GrainsCounter.reset
+            randomAliveCells
         }
         padding = Insets(10, 5, 10, 5)
       }
@@ -117,8 +120,8 @@ object GameOfLifeApp extends JFXApp {
     val maxCells:Int = Try(this.initiallyAlive.value.toInt).getOrElse(0)
     val refs = refsOfCells.keys.toSet
     refs.foreach( ref => {
-        ref.tell(ChangeStatus(Cell.dead, shouldReply = false), ActorRef.noSender)
-        cellsRectangles(refsOfCells(ref)).isAlive.value = Cell.dead
+      cellsRectangles(refsOfCells(ref)).grainGroupId.value=CellRectangle.noGrainGroup
+      ref ! ChangeStatus(0L, shouldReply = false)
       })
     randomizeCells(Set.empty, refs)
 
@@ -128,11 +131,12 @@ object GameOfLifeApp extends JFXApp {
       ready.size match {
         case `maxCells` => ()
         case _ =>
+          val groupId = GrainsCounter.inc
           val next = Random.nextInt(rest.size)
           val ref = rest.toVector(next)
-          ref ? ChangeStatus(Cell.alive) onComplete {
-            case Success(StatusChanged(newStatus, _)) =>
-              cellsRectangles(refsOfCells(ref)).isAlive.value = newStatus
+          ref ? ChangeStatus(groupId) onComplete {
+            case Success(StatusChanged(status, seedGroupId, _)) =>
+              cellsRectangles(refsOfCells(ref)).grainGroupId.value = seedGroupId
             case Failure(t) => log.warn(t.toString)
             case Success(s) => log.warn(s"Unknown response $s")
           }
@@ -150,7 +154,7 @@ object GameOfLifeApp extends JFXApp {
         position.value = Position(x.value.toFloat, y.value.toFloat)
         width = size
         height = size
-        isAlive.value = Cell.dead
+        fill = grainColors(CellRectangle.noGrainGroup)
       }
       initCell(rec)
       rec

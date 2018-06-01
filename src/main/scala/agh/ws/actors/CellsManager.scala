@@ -1,7 +1,7 @@
 package agh.ws.actors
 
 import agh.ws._
-import agh.ws.actors.Cell.{ChangeStatus, Iterate, IterationCompleted, NeighbourRegistered, NeighboursRemoved, Position, RegisterNeighbour, RemoveNeighbours}
+import agh.ws.actors.Cell.{CellFullyIterated, ChangeStatus, Iterate, IterationCompleted, NeighbourRegistered, NeighboursRemoved, Position, RegisterNeighbour, RemoveNeighbours, StatusChanged}
 import agh.ws.messagess._
 import agh.ws.util._
 import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props}
@@ -32,8 +32,10 @@ class CellsManager(
 
   import CellsManager._
 
-  private val cellsOrderedByPosition: mutable.Map[Position, ActorRef] = scala.collection.mutable.SortedMap[Position, ActorRef]()(Ordering.by(p => (p.y, p.x)))
-  implicit private val cellsOrderedById: mutable.Map[Long, ActorRef] = scala.collection.mutable.SortedMap[Long, ActorRef]()
+  private val positionToRef: mutable.Map[Position, ActorRef] = scala.collection.mutable.HashMap[Position, ActorRef]()
+  private val grains: mutable.Set[ActorRef] = mutable.HashSet[ActorRef]()
+  private val refToCellId: mutable.Map[ActorRef, Long] = mutable.HashMap[ActorRef, Long]()
+  implicit private val cellIdToRef: mutable.Map[Long, ActorRef] = scala.collection.mutable.HashMap[Long, ActorRef]()
   implicit val system: ActorSystem = context.system
   implicit val materializer: ActorMaterializer = ActorMaterializer()
 
@@ -49,8 +51,8 @@ class CellsManager(
       val cellId = CellsCounter.inc
       val newCell = context.actorOf(Cell.props(position, cellId), s"cell-${position.x}-${position.y}-$cellId")
       context.watch(newCell)
-      cellsOrderedByPosition += (position -> newCell)
-      cellsOrderedById += (cellId -> newCell)
+      cellIdToRef += (cellId -> newCell)
+      refToCellId += (newCell -> cellId)
       sender() ! CellRegistered(req.requestId, newCell, position, cellId)
       registerInNeighbourhood(position, newCell, neighbourhoodModel)
 
@@ -62,7 +64,7 @@ class CellsManager(
       GameOfLifeApp.iterationCounter.inc
       val requester = sender()
       val query = context.actorOf(CellsQuery.props(
-        cellsOrderedByPosition.values.toSet,
+        grains.toSet,
         req.requestId,
         requester,
         Iterate(),
@@ -70,10 +72,13 @@ class CellsManager(
       ), s"query-iterate-${req.requestId}")
       pendingRequest(pending, requester, req, neighbourhoodModel)
 
+    case CellFullyIterated() =>
+      grains -= sender()
+
     case req @ ChangeNeighbourhoodModel(model) =>
       log.info("Changing neighbourhood")
-      val query = context.actorOf(CellsQuery.props(
-          cellsOrderedById.values.toSet,
+      context.actorOf(CellsQuery.props(
+          cellIdToRef.values.toSet,
           req.requestId,
           self,
           RemoveNeighbours(Set.empty, recursive = false),
@@ -83,6 +88,15 @@ class CellsManager(
         pending + (req.requestId -> sender()),
         model
       )
+
+    case StatusChanged(status, seedGroupId,_) =>
+      val ref = sender()
+      status match {
+        case Cell.isEmpty => grains -= ref
+          log.debug(s"Cell $ref was unbinded from grain group")
+        case isGrain => grains += ref
+          log.debug(s"Cell $ref was binded to grain group $seedGroupId")
+      }
 
     case res @ QueryResponse(_, responses) if responses.values.forall(_.isInstanceOf[NeighboursRemoved]) =>
       log.info(s"Got query response $res")

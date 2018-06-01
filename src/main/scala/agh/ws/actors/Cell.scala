@@ -2,25 +2,27 @@ package agh.ws.actors
 
 import agh.ws.actors.Cell.Position
 import agh.ws.messagess._
+import agh.ws.models.CellRectangle
+import agh.ws.util.RequestsCounter
 import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props, Terminated}
 import akka.stream.ActorMaterializer
 
+import scala.reflect.runtime.universe
+import scala.reflect.runtime.universe._
 import scala.concurrent.duration._
-import scala.reflect.runtime.universe.{typeTag, TypeTag}
 
 object Cell{
-  val alive = true
-  val dead = false
+  val isEmpty = true
   implicit val timeout: akka.util.Timeout = akka.util.Timeout(30.seconds)
 
   case class Position(x: Float, y: Float)
 
-  final case class ChangeStatus(status: Boolean,
+  final case class ChangeStatus(groupId:Long,
                                 override val shouldReply: Boolean=true) extends Request
   final case class GetStatus() extends Request
-  final case class Status(status:Boolean, requestId:Long)         extends Response
-  final case class StatusChanged(status:Boolean, requestId:Long)  extends Response
-
+  final case class Status(status:Boolean, seedGroupId:Long, requestId:Long)         extends Response
+  final case class StatusChanged(status:Boolean, seedGroupId:Long, requestId:Long)  extends Response
+  final case class CellFullyIterated() extends Request
   final case class RegisterNeighbour(targetRef: ActorRef,
                                      recursive: Boolean = true)   extends Request
   final case class RemoveNeighbours(neighbours: Set[ActorRef],
@@ -32,7 +34,7 @@ object Cell{
   final case class Neighbours(neighbours: Set[ActorRef], requestId: Long) extends Response
 
   final case class Iterate() extends Request
-  final case class IterationCompleted(status:Boolean, requestId:Long) extends Response
+  final case class IterationCompleted(newGrains: Map[ActorRef, Long], requestId:Long) extends Response
 
   def props(position: Position, id: Long): Props = Props(new Cell(position, id))
 }
@@ -46,7 +48,8 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
 
   override def receive: Receive = waitingForMessagess(
     Set.empty,
-    dead,
+    isEmpty,
+    0L,
     Map.empty
   )
 
@@ -54,6 +57,7 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
   def waitingForMessagess(
                            neighbours: Set[ActorRef],
                            status: Boolean,
+                           seedGroupId: Long,
                            queries: Map[Long, ActorRef])
   : Receive = {
     // Neighbouhood
@@ -63,7 +67,7 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
         if (recursive)
           neighbour ! RegisterNeighbour(self)
         context watch req.targetRef
-        context become waitingForMessagess(neighbours + neighbour, status, queries)
+        context become waitingForMessagess(neighbours + neighbour, status, seedGroupId, queries)
       }
       sender() ! NeighbourRegistered(req.requestId)
 
@@ -85,37 +89,76 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
       })
       if (shouldReply)
         sender() ! NeighboursRemoved(req.requestId, position)
-      context become waitingForMessagess(neighbours diff ns, status, queries)
+      context become waitingForMessagess(neighbours diff ns, status, seedGroupId, queries)
 
     case NeighbourRegistered(_) => log.debug(s"Recursively registered neighbour $self to ${sender()}")
 
     // Status
-    case req@ChangeStatus(newStatus, shouldReply) =>
-      log.debug(s"Changing status of $self to $newStatus")
-      if (shouldReply)
-        sender() ! StatusChanged(newStatus, req.requestId)
-      context become waitingForMessagess(neighbours, newStatus, queries)
+    case req@ChangeStatus(seedGroup, shouldReply) =>
+      if (isEmpty) {
+        val newStatus = seedGroup match {
+          case 0L => isEmpty
+          case _ => !isEmpty
+        }
+        if (shouldReply)
+          sender() ! StatusChanged(newStatus, seedGroup, req.requestId)
+        context become waitingForMessagess(neighbours, newStatus, seedGroup, queries)
+        context.parent ! StatusChanged(newStatus, seedGroup, req.requestId)
+      } else
+        sender() ! StatusChanged(status, seedGroupId, req.requestId)
 
     case req@GetStatus() =>
-      sender() ! Status(status, req.requestId)
+      sender() ! Status(status, seedGroupId, req.requestId)
 
     // Behavior
     case req@Iterate() =>
       if (neighbours.nonEmpty) {
         context.actorOf(CellsQuery.props(neighbours, req.requestId, self, GetStatus(), 3.second), s"query-getStatus-${req.requestId}")
-        context become waitingForMessagess(neighbours, status, queries + (req.requestId -> sender()))
+        context become waitingForMessagess(neighbours, status, seedGroupId, queries + (req.requestId -> sender()))
       } else {
         log.debug("Empty neighbours list, skipping query")
-        sender() ! IterationCompleted(iterate(Map.empty, status), req.requestId)
+        sender() ! IterationCompleted(Map.empty, req.requestId)
       }
 
-    case QueryResponse(requestId, responses: Map[ActorRef, Status]) =>
-      //      log.debug(s"Received query response with id $requestId")
-      val newStatus = iterate(responses, status)
+    case query @ QueryResponse(requestId, responses: Map[ActorRef, Response]) =>
       val sender = queries(requestId)
-      context become waitingForMessagess(neighbours, status, queries - requestId)
+      if(responses.isEmpty)
+        context become  waitingForMessagess(neighbours, status, seedGroupId, queries - requestId)
+      else
+      responses.head._2 match {
+        case s: Status =>
+          val emptyGrains = responses.asInstanceOf[Map[ActorRef, Status]]
+            .filter { case (_, stat) => stat.status == isEmpty }
+          if(emptyGrains.isEmpty){
+            sender ! IterationCompleted(Map.empty, requestId)
+            context.parent ! CellFullyIterated()
+            context become waitingForMessagess(neighbours, status, seedGroupId, queries - requestId)
+          }
+          else {
+            val newRequestId = RequestsCounter.inc
+            context.actorOf(
+              CellsQuery.props(
+                emptyGrains.keySet,
+                newRequestId,
+                self,
+                ChangeStatus(seedGroupId),
+                1.second
+              ))
+            context become waitingForMessagess(neighbours, status, seedGroupId, queries - requestId + (newRequestId -> sender))
+          }
+        case s : StatusChanged =>
+          val newGrains = responses.asInstanceOf[Map[ActorRef, StatusChanged]]
+            .filter{
+              case (ref, statusChanged) => statusChanged.seedGroupId!=CellRectangle.noGrainGroup
+            }.map{
+            case (ref, statusChanged) => ref -> statusChanged.seedGroupId
+          }
 
-      sender ! IterationCompleted(newStatus, requestId)
+          sender ! IterationCompleted(newGrains, requestId)
+          context become waitingForMessagess(neighbours, status, seedGroupId, queries - requestId)
+
+        case other => log.warning(s"Unknown query response: $other")
+      }
 
     case QueryResponse(_, unknownResponses) =>
       log.warning(s"Unknown response $unknownResponses")
@@ -123,13 +166,5 @@ class Cell(position: Position, id: Long) extends Actor with ActorLogging {
     case msg@_ => log.warning(s"Unknown message $msg from ${sender()}")
   }
 
-  def iterate(responses: Map[ActorRef, Status], lastStatus: Boolean): Boolean = {
-    val aliveNeighbours = responses.values.count(_.status == alive)
 
-    aliveNeighbours match {
-      case 3 => alive
-      case n if n > 3 || n < 2 => dead
-      case _ => lastStatus
-    }
-  }
 }

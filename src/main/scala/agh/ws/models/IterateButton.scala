@@ -42,11 +42,11 @@ class IterateButton(
     (cellsManager ? Iterate()) onComplete {
       case Success(QueryResponse(_, responses)) =>
         responses.foreach {
-          case (ref, result: IterationCompleted) =>
-            ref ! ChangeStatus(result.status, shouldReply = false)
-            val id = refsOfCells(ref)
-            val rec = cellsRectangles(id)
-            rec.isAlive.value = result.status
+          case (_, result: IterationCompleted) =>
+            result.newGrains.foreach{
+              case (ref, groupId) =>
+                cellsRectangles(refsOfCells(ref)).grainGroupId.value=groupId
+            }
           case (ref, timeout: CellTimedOut) => ()
         }
         if (isStarted.value)
