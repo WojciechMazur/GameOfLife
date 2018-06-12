@@ -13,10 +13,10 @@ sealed trait NeighbourhoodModel {
   val name:String
   def findCellNeighbours(
                           position: Position,
-                          offset: Float
+                          offset: Float,
+                          boundiresBehavior: BoundiresBehavior
                         )(
                           implicit boundires: Boundries,
-                          boundiresBehavior: BoundiresBehavior,
                           cells: mutable.Map[Long, ActorRef]
                         ): Seq[ActorRef] = {
     directions

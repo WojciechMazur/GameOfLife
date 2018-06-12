@@ -3,7 +3,9 @@ package agh.ws
 import agh.ws.actors.Cell.{ChangeStatus, Position, StatusChanged}
 import agh.ws.actors.CellsManager.{CellRegistered, ChangeNeighbourhoodModel, NeighbourhoodModelChanged, RegisterCell}
 import agh.ws.actors.{Cell, CellsManager}
-import agh.ws.models.{CellRectangle, IterateButton}
+import agh.ws.core.cell.{CellRandomizer, DefaultRandomizer, EventlyDistributed}
+import agh.ws.models.{CellRectangle, GrainGrowthButton}
+import agh.ws.util.BoundiresBehavior.{Repetetive, Strict}
 import agh.ws.util._
 import akka.actor.{ActorRef, ActorSystem}
 import akka.pattern.ask
@@ -18,20 +20,20 @@ import scalafx.Includes._
 import scalafx.application
 import scalafx.application.{JFXApp, Platform}
 import scalafx.beans.binding.Bindings
-import scalafx.beans.property.StringProperty
+import scalafx.beans.property.{ObjectProperty, StringProperty}
 import scalafx.beans.value.ObservableValue
 import scalafx.geometry.Insets
 import scalafx.scene.Scene
 import scalafx.scene.control.{Button, ComboBox, Label, TextField}
 import scalafx.scene.input.MouseEvent
-import scalafx.scene.layout.{AnchorPane, BorderPane, HBox}
+import scalafx.scene.layout.{AnchorPane, BorderPane, HBox, VBox}
 import scalafx.scene.paint.Color
 import scalafx.util.StringConverter
 
 object GameOfLifeApp extends JFXApp {
   val initCounter = new ObsersvableLongCounter()
   val iterationCounter = new ObsersvableLongCounter()
-  val cellsX: Int = 500
+  val cellsX: Int = 250
   val cellsY: Int = 250
   val size = 3
   val spacing = 0
@@ -41,10 +43,11 @@ object GameOfLifeApp extends JFXApp {
   val initiallyAlive: StringProperty = StringProperty("0")
 
   val boundries: Boundries = Boundries(width, height)
-  private val boundiresBehavior = BoundiresBehavior.Repetetive
+  private val boundiresBehaviorProperty = ObjectProperty[BoundiresBehavior](Repetetive)
+  private val neighbourhoodModelProperty = ObjectProperty[NeighbourhoodModel](Moore)
 
   val cellsRectangles: mutable.HashMap[Long, CellRectangle] = mutable.HashMap[Long, CellRectangle]()
-  val cellsRefs: mutable.HashMap[Long, ActorRef] = mutable.HashMap[Long, ActorRef]()
+  val cellsRefs:   mutable.HashMap[Long, ActorRef] = mutable.HashMap[Long, ActorRef]()
   val refsOfCells: mutable.HashMap[ActorRef, Long] = mutable.HashMap[ActorRef, Long]()
   val grainColors: mutable.HashMap[Long, Color] = mutable.HashMap(CellRectangle.noGrainGroup -> Color.LightGrey)
 
@@ -54,7 +57,7 @@ object GameOfLifeApp extends JFXApp {
   implicit val executionContext: ExecutionContextExecutor = scala.concurrent.ExecutionContext.global
   val log = LoggerFactory.getLogger(getClass.getName)
 
-  val cellsManager: ActorRef = system.actorOf(CellsManager.props(boundries, boundiresBehavior, size + spacing, Moore), "manager")
+  val cellsManager: ActorRef = system.actorOf(CellsManager.props(boundries, boundiresBehaviorProperty.value, size + spacing, Moore), "manager")
 
   stage = new application.JFXApp.PrimaryStage {
     title.value = "Game of Life"
@@ -66,44 +69,82 @@ object GameOfLifeApp extends JFXApp {
         () => s"Cells initialized: ${initCounter.get.value}/${cellsX*cellsY}   " +
           s"  ${(initCounter.get.value.toDouble / (cellsX * cellsY) *10000).toInt / 100.0}%",
         initCounter.get)
-        padding = Insets(10, 5, 10, 5)
+      padding=Insets(2.5f)
       }
 
-      val iterationLabel = new Label{
+      val iterationLabel = new Label {
         text <== Bindings.createStringBinding(
           () => s"Iteration: ${iterationCounter.get.value}",
           iterationCounter.get)
-        padding = Insets(10, 5 , 10, 5)
+        padding = Insets(2.5f)
       }
       val initiallyAliveTextField = new TextField{
+        maxWidth = 75f
         text = (cellsX*cellsY*0.1).toInt.toString
-        padding = Insets(10, 5, 10, 5)
       }
       val neighbourhoodModelChoice = new ComboBox[NeighbourhoodModel](
         Seq(Moore, VonNeuman, HexagonalLeft, HexagonalRight, HexagonalRandom, PentagonalRandom)
       ) {
         converter = StringConverter.toStringConverter(_.name)
-        padding = Insets(5)
         selectionModel.value.select(0)
         value.onChange[NeighbourhoodModel]{
           (o:ObservableValue[NeighbourhoodModel, NeighbourhoodModel], oldVal:NeighbourhoodModel, newVal:NeighbourhoodModel) =>
-            changeNeighbourhoodModel(newVal)
+            neighbourhoodModelProperty.value = newVal
+            changeNeighbourhoodModel()
         }
       }
+
+      val cellRandomizerChoice = new ComboBox[CellRandomizer](
+        Seq(DefaultRandomizer, EventlyDistributed)
+      ){
+        converter = StringConverter.toStringConverter(_.name)
+        selectionModel.value.select(0)
+
+        }
+
+      val boundiresBehaviorChoice = new ComboBox[BoundiresBehavior](
+        Seq(Repetetive, Strict)
+      ){
+        converter = StringConverter.toStringConverter(_.name)
+        selectionModel.value.select(0)
+        value.onChange[BoundiresBehavior]{
+          (o:ObservableValue[BoundiresBehavior, BoundiresBehavior], oldVal:BoundiresBehavior, newVal:BoundiresBehavior) =>
+            boundiresBehaviorProperty.value = newVal
+            changeNeighbourhoodModel()
+        }
+      }
+
       initiallyAlive <== initiallyAliveTextField.text
-      val randomInitialyAliveButton: Button = new Button("Randomize alive"){
+      val randomInitialyAliveButton: Button = new Button("Randomize"){
         onMouseClicked = {
           (_:MouseEvent) =>
             GrainsCounter.reset
-            randomAliveCells
+            iterationCounter.reset
+            cellRandomizerChoice.value.value.randomize(
+              initiallyAlive.value.toLong,
+              cellsRectangles.toMap,
+              refsOfCells.toMap
+            )
+            cellRandomizerChoice.value.value.randomize(
+              initiallyAlive.value.toLong,
+              cellsRectangles.toMap,
+              refsOfCells.toMap
+            )
         }
-        padding = Insets(10, 5, 10, 5)
       }
-      val iterateButton = new IterateButton(cellsManager, refsOfCells, cellsRectangles){
-        padding = Insets(10, 5, 10, 5)
-      }
+      val iterateButton = new GrainGrowthButton(cellsManager, refsOfCells, cellsRectangles)
 
-      borderPane.top = new HBox(iterateButton, initiallyAliveTextField, randomInitialyAliveButton, initProgress, iterationLabel, neighbourhoodModelChoice)
+      borderPane.left = new VBox(
+        initProgress,
+        new HBox(
+          new Label("Initially alive: "){padding=Insets(2.5f)}, initiallyAliveTextField, randomInitialyAliveButton){padding = Insets(10, 5, 0, 5)},
+        new HBox(new Label("Randomization method: "){padding=Insets(2.5f)}, cellRandomizerChoice){padding = Insets(5)},
+        new HBox(new Label("Neighbourhood model:  "){padding=Insets(2.5f)}, neighbourhoodModelChoice){padding = Insets(5)},
+        new HBox(new Label("Boundaries behavior:  "){padding=Insets(2.5f)}, boundiresBehaviorChoice){padding = Insets(5)},
+        new HBox(iterateButton, iterationLabel){padding = Insets(10, 5, 10, 5)}
+      ){
+        padding = Insets(20, 5, 10, 10)
+      }
       val cellsPane = new AnchorPane()
       cellsPane.children = createCells
       borderPane.center = cellsPane
@@ -115,35 +156,6 @@ object GameOfLifeApp extends JFXApp {
   }
 
 
-
-  def randomAliveCells = {
-    val maxCells:Int = Try(this.initiallyAlive.value.toInt).getOrElse(0)
-    val refs = refsOfCells.keys.toSet
-    refs.foreach( ref => {
-      cellsRectangles(refsOfCells(ref)).grainGroupId.value=CellRectangle.noGrainGroup
-      ref ! ChangeStatus(0L, shouldReply = false)
-      })
-    randomizeCells(Set.empty, refs)
-
-    @scala.annotation.tailrec
-    def randomizeCells(ready: Set[ActorRef], rest: Set[ActorRef]): Unit = {
-      import scala.util.Random
-      ready.size match {
-        case `maxCells` => ()
-        case _ =>
-          val groupId = GrainsCounter.inc
-          val next = Random.nextInt(rest.size)
-          val ref = rest.toVector(next)
-          ref ? ChangeStatus(groupId) onComplete {
-            case Success(StatusChanged(status, seedGroupId, _)) =>
-              cellsRectangles(refsOfCells(ref)).grainGroupId.value = seedGroupId
-            case Failure(t) => log.warn(t.toString)
-            case Success(s) => log.warn(s"Unknown response $s")
-          }
-          randomizeCells(ready + ref, rest - ref)
-      }
-    }
-  }
 
   def createCells: immutable.IndexedSeq[CellRectangle] = for (
     iY <- 0 until cellsY;
@@ -180,10 +192,13 @@ object GameOfLifeApp extends JFXApp {
     }
   }
 
-  private def changeNeighbourhoodModel(neighbourhoodModel: NeighbourhoodModel): Unit = {
+  private def changeNeighbourhoodModel(): Unit = {
     println("Changing neighbourhood model")
-    cellsManager.ask(ChangeNeighbourhoodModel(neighbourhoodModel))(20.seconds) onComplete{
-     case Success(NeighbourhoodModelChanged(_)) => println("Neighbourhood model changed successfully")
+    val neighbourhoodModel = neighbourhoodModelProperty.value
+    val boundiresBehavior  = boundiresBehaviorProperty.value
+
+    cellsManager.ask(ChangeNeighbourhoodModel(neighbourhoodModel, boundiresBehavior))(20.seconds) onComplete{
+     case Success(NeighbourhoodModelChanged(_)) => println(s"Neighbourhood model changed successfull to ${neighbourhoodModel.name} with ${boundiresBehavior.name} behavior")
      case Failure(t) => println(t.toString)
      case other => println(s"Unknown response $other")
    }

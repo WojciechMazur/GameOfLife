@@ -3,6 +3,7 @@ package agh.ws.models
 import agh.ws.GameOfLifeApp
 import agh.ws.GameOfLifeApp.{cellsX, cellsY, initCounter}
 import agh.ws.actors.Cell.{ChangeStatus, Iterate, IterationCompleted, Position}
+import agh.ws.actors.CellsManager.EmptyIteration
 import agh.ws.actors.CellsQuery.CellTimedOut
 import agh.ws.messagess.QueryResponse
 import akka.actor.ActorRef
@@ -17,8 +18,9 @@ import scalafx.scene.control.Button
 import scalafx.scene.input.MouseEvent
 import scala.concurrent.duration._
 import scalafx.Includes._
+import scalafx.application.Platform
 
-class IterateButton(
+class GrainGrowthButton(
                      cellsManager: ActorRef,
                      refsOfCells: mutable.HashMap[ActorRef, Long],
                      cellsRectangles: mutable.HashMap[Long, CellRectangle]
@@ -28,7 +30,7 @@ class IterateButton(
 
   val isStarted = BooleanProperty(false)
   disable <== when(initCounter.get === cellsX*cellsY.toLong) choose false otherwise true
-  text <== when(isStarted) choose "Stop iterating" otherwise "Start iterating"
+  text <== when(isStarted) choose "Stop grain growth" otherwise "Start grain growth"
 
   onMouseClicked = {
     (_: MouseEvent) =>
@@ -41,16 +43,23 @@ class IterateButton(
     implicit val iterateTimeout: akka.util.Timeout = 20.seconds
     (cellsManager ? Iterate()) onComplete {
       case Success(QueryResponse(_, responses)) =>
+//        println(responses.size)
         responses.foreach {
           case (_, result: IterationCompleted) =>
-            result.newGrains.foreach{
+            result.newGrains.foreach {
               case (ref, groupId) =>
-                cellsRectangles(refsOfCells(ref)).grainGroupId.value=groupId
+                Platform.runLater {
+                  cellsRectangles(refsOfCells(ref)).grainGroupId.value = groupId
+                }
             }
           case (ref, timeout: CellTimedOut) => ()
         }
         if (isStarted.value)
           iterate()
+      case Success(EmptyIteration) =>
+        Platform.runLater {
+          isStarted.value = false
+        }
       case Failure(t) => logger.warn(s"Iteration failed -  $t")
     }
   }
